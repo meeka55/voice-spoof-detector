@@ -1,6 +1,6 @@
 # voice-spoof-detector
 
-![CI](https://github.com/<meeka55>/voice-spoof-detector/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/meeka55/voice-spoof-detector/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
 Detect synthetic (text-to-speech / voice-conversion) and replayed speech.
