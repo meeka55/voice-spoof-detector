@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+data/
+models/*.joblib
+results/*
+!results/.gitkeep
+.DS_Store
