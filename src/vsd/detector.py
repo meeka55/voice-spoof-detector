@@ -38,6 +38,10 @@ def _extract_train(path: str, cfg: FeatureConfig, frames_per_utt: int, seed: int
 
 
 class Detector:
+    # Class-level defaults so models pickled before these fields existed still load.
+    accept_threshold: float | None = None
+    reject_threshold: float | None = None
+
     def __init__(
         self,
         feature_cfg: FeatureConfig | None = None,
@@ -47,6 +51,10 @@ class Detector:
     ):
         if backend not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}")
+        if isinstance(n_components, bool) or not isinstance(n_components, int):
+            raise TypeError(f"n_components must be an integer, got {n_components!r}")
+        if n_components < 1:
+            raise ValueError(f"n_components must be >= 1, got {n_components}")
         self.feature_cfg = feature_cfg or FeatureConfig()
         self.backend = backend
         self.n_components = n_components
@@ -65,14 +73,31 @@ class Detector:
         n_jobs: int = -1,
         frames_per_utt: int = 60,
     ) -> Detector:
-        labels = np.asarray(labels, dtype=int)
+        y = np.asarray(labels, dtype=int)
+        paths = list(paths)
+        if len(paths) != y.size:
+            raise ValueError(
+                f"paths and labels differ in length ({len(paths)} vs {y.size}); "
+                "a shorter label list would silently drop utterances"
+            )
+        if not paths:
+            raise ValueError("cannot fit on an empty set of paths")
+        if isinstance(frames_per_utt, bool) or not isinstance(frames_per_utt, int):
+            raise TypeError(f"frames_per_utt must be an integer, got {frames_per_utt!r}")
+        if frames_per_utt < 1:
+            raise ValueError(f"frames_per_utt must be >= 1, got {frames_per_utt}")
+        n_bona, n_spoof = int((y == 1).sum()), int((y == 0).sum())
+        if n_bona == 0 or n_spoof == 0:
+            missing = "bona fide" if n_bona == 0 else "spoof"
+            raise ValueError(f"training needs both classes; no {missing} utterances in the input")
         results = Parallel(n_jobs=n_jobs)(
             delayed(_extract_train)(p, self.feature_cfg, frames_per_utt, self.seed + i)
             for i, p in enumerate(paths)
         )
+
         if self.backend == "gmm":
-            bona = np.concatenate([r[0] for r, y in zip(results, labels) if y == 1])
-            spoof = np.concatenate([r[0] for r, y in zip(results, labels) if y == 0])
+            bona = np.concatenate([r[0] for r, lab in zip(results, y) if lab == 1])
+            spoof = np.concatenate([r[0] for r, lab in zip(results, y) if lab == 0])
             k = self.n_components
             self._gmm_bona = GaussianMixture(
                 k, covariance_type="diag", max_iter=100, random_state=self.seed
@@ -86,7 +111,7 @@ class Detector:
                 model = LogisticRegression(max_iter=3000, class_weight="balanced")
             else:
                 model = SVC(kernel="rbf", class_weight="balanced")
-            self._clf = make_pipeline(StandardScaler(), model).fit(X, labels)
+            self._clf = make_pipeline(StandardScaler(), model).fit(X, y)
         return self
 
     # ----------------------------------------------------------------- scoring
@@ -110,6 +135,22 @@ class Detector:
 
     def predict_label(self, score: float) -> str:
         return "bonafide" if score >= self.threshold else "spoof"
+
+    @property
+    def decision_threshold(self) -> float:
+        """The threshold that actually decides ``bonafide``: the calibrated accept
+        threshold when an operating point is set, the dev EER threshold otherwise."""
+        return self.accept_threshold if self.accept_threshold is not None else self.threshold
+
+    def decide(self, score: float) -> str:
+        """``bonafide`` / ``spoof``, or ``review`` for scores inside a calibrated band."""
+        if self.accept_threshold is not None:
+            if score >= self.accept_threshold:
+                return "bonafide"
+            if self.reject_threshold is not None and score <= self.reject_threshold:
+                return "spoof"
+            return "review"
+        return self.predict_label(score)
 
     # -------------------------------------------------------------- persistence
     def save(self, path: str) -> None:

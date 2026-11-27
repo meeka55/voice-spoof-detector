@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import math
 import os
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -24,14 +25,32 @@ MIN_SECONDS = 0.5
 state: dict = {}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from the environment, naming the variable when it is unusable."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {raw!r}")
+    return value
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     path = os.getenv("VSD_MODEL_PATH", "models/model.joblib")
     if os.path.exists(path):
         state["detector"] = Detector.load(path)
-        env_thr = os.getenv("VSD_THRESHOLD")
-        if env_thr is not None:
-            state["detector"].threshold = float(env_thr)
+        if os.getenv("VSD_THRESHOLD") is not None:
+            det = state["detector"]
+            det.threshold = _env_float("VSD_THRESHOLD", det.threshold)
+            # An explicit threshold replaces a calibrated band, otherwise the override
+            # would be accepted and then ignored by decide().
+            det.accept_threshold = None
+            det.reject_threshold = None
     yield
     state.clear()
 
@@ -50,6 +69,8 @@ class Detection(BaseModel):
     threshold: float
     duration_s: float
     model: dict
+    accept_threshold: float | None = None
+    reject_threshold: float | None = None
 
 
 @app.get("/health")
@@ -74,9 +95,11 @@ async def detect(file: Annotated[UploadFile, File()]) -> Detection:
         raise HTTPException(422, f"Audio shorter than {MIN_SECONDS}s")
     score = det.score_audio(y)
     return Detection(
-        label=det.predict_label(score),
+        label=det.decide(score),
         score=score,
-        threshold=det.threshold,
+        threshold=det.decision_threshold,
         duration_s=round(duration, 3),
         model=det.meta,
+        accept_threshold=det.accept_threshold,
+        reject_threshold=det.reject_threshold,
     )
