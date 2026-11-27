@@ -68,13 +68,12 @@ retained and will be added when the runs are repeated.
 
 ### What the results show
 
-**LFCC beats MFCC overall, but not on every attack.** LFCC cuts eval EER from 13.4% to 6.0%. Most of the gap comes
-from A07, A16, A18 and A19; the largest is A19 (1.8% vs 34.9%). MFCC is better on A12 and A13, so the front-end
+**LFCC beats MFCC overall, but not on every attack.** LFCC cuts eval EER from 13.4% to 6.0%. The largest gaps are on A19 (1.8% vs 34.9%), A17 (18.7% vs 32.5%), and A07 and A16 (about 12 points each). MFCC also fails on A16 and A19, which reuse algorithms from training (A04 and A06), so its weakness is not only about unseen attack types. MFCC is better on A12 and A13, so the front-end
 choice is not uniformly better. One plausible reason for the overall gap is that LFCC keeps full resolution in the
 high band, where vocoder artefacts tend to appear, while the mel scale compresses it. I have not tested this; a
 sub-band ablation would be the way to check.
 
-**The hardest attacks are the ones that build output differently from the training attacks.** For the best model the
+**The hardest attacks for the best model are A17 (18.7%), A13 (10.7%) and A10 (8.8%).** For the best model the
 hardest attacks are A17 (18.7%), A13 (10.7%) and A10 (8.8%). According to the ASVspoof 2019 database papers, A17 is a
 voice-conversion system with a VAE acoustic model and waveform filtering, A13 is a hybrid TTS-to-VC system that
 uses spectral filtering, and A10 is Tacotron 2 with a WaveRNN neural vocoder. A hypothesis: A17 and A13 produce
