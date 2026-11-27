@@ -73,8 +73,7 @@ choice is not uniformly better. One plausible reason for the overall gap is that
 high band, where vocoder artefacts tend to appear, while the mel scale compresses it. I have not tested this; a
 sub-band ablation would be the way to check.
 
-**The hardest attacks for the best model are A17 (18.7%), A13 (10.7%) and A10 (8.8%).** For the best model the
-hardest attacks are A17 (18.7%), A13 (10.7%) and A10 (8.8%). According to the ASVspoof 2019 database papers, A17 is a
+**The hardest attacks for the best model are A17 (18.7%), A13 (10.7%) and A10 (8.8%). According to the ASVspoof 2019 database papers, A17 is a
 voice-conversion system with a VAE acoustic model and waveform filtering, A13 is a hybrid TTS-to-VC system that
 uses spectral filtering, and A10 is Tacotron 2 with a WaveRNN neural vocoder. A hypothesis: A17 and A13 produce
 their output by filtering a source waveform rather than synthesising one with a vocoder, so they may keep more of
