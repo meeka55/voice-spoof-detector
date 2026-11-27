@@ -1,6 +1,11 @@
 """Evaluate a trained detector and write honest, reproducible artefacts.
 
 Outputs (in --out-dir): metrics.json, scores.csv, roc.png, per_attack_eer.png
+
+The report includes a bootstrap confidence interval for the EER, because a single
+point estimate on a few thousand utterances says nothing about how much it can move.
+When the model carries a calibrated operating point (``train --target-far/--target-frr``)
+the realised false-accept, false-reject and review rates are reported as well.
 """
 
 from __future__ import annotations
@@ -14,13 +19,13 @@ import matplotlib.pyplot as plt
 
 from .data import load_asvspoof2019_la, load_manifest, subsample
 from .detector import Detector
-from .metrics import per_attack_eer, roc_points, summarize
+from .metrics import eer_ci, per_attack_eer, roc_points, summarize
 
 matplotlib.use("Agg")  # headless backend; must be set before any figure is created
 
 
-def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description=__doc__)
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--model", required=True)
     p.add_argument("--dataset", choices=["asvspoof2019la", "manifest"], default="asvspoof2019la")
     p.add_argument("--data-root")
@@ -29,8 +34,50 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-utts", type=int, default=None)
     p.add_argument("--n-jobs", type=int, default=-1)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="override the decision threshold (disables a calibrated review band for this run)",
+    )
+    p.add_argument(
+        "--ci-boot",
+        type=int,
+        default=200,
+        help="bootstrap replicates for the EER confidence interval; 0 disables it",
+    )
     p.add_argument("--out-dir", default="results/run")
-    args = p.parse_args(argv)
+    return p
+
+
+def _operating_point_report(det: Detector, scores, labels) -> dict:
+    """Realised rates of the model's calibrated band on this split."""
+    decisions = [det.decide(float(s)) for s in scores]
+    labels = list(labels)
+    n_bona = sum(1 for lab in labels if lab == 1)
+    n_spoof = len(labels) - n_bona
+    n_review = sum(1 for d in decisions if d == "review")
+    accepted = sum(1 for d, lab in zip(decisions, labels) if lab == 0 and d == "bonafide")
+    rejected = sum(1 for d, lab in zip(decisions, labels) if lab == 1 and d == "spoof")
+    return {
+        "accept_threshold": det.accept_threshold,
+        "reject_threshold": det.reject_threshold,
+        "false_accept_rate": round(accepted / max(n_spoof, 1), 6),
+        "false_reject_rate": round(rejected / max(n_bona, 1), 6),
+        "review_rate": round(n_review / max(len(decisions), 1), 6),
+        "n_review": n_review,
+    }
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.dataset == "manifest" and not args.manifest:
+        parser.error("--dataset manifest requires --manifest")
+    if args.dataset == "asvspoof2019la" and not args.data_root:
+        parser.error("--dataset asvspoof2019la requires --data-root")
+    if args.ci_boot < 0:
+        parser.error("--ci-boot must be >= 0")
 
     det = Detector.load(args.model)
     df = (
@@ -39,26 +86,46 @@ def main(argv: list[str] | None = None) -> None:
         else load_manifest(args.manifest, seed=args.seed)
     )
     df = subsample(df[df.split == args.split], args.max_utts, args.seed).reset_index(drop=True)
+    if len(df) == 0:
+        raise SystemExit(f"no utterances for split={args.split}; nothing to evaluate")
+    if df.label.nunique() < 2:
+        raise SystemExit(f"split={args.split} has only one class; EER needs both")
     print(f"evaluating on {len(df)} utterances from split={args.split}")
 
+    dev_threshold = det.threshold
+    has_band = det.accept_threshold is not None
+    if args.threshold is not None:
+        det.threshold = float(args.threshold)
+        det.accept_threshold = None
+        det.reject_threshold = None
+        has_band = False
+
     df["score"] = det.score_many(df.path.tolist(), n_jobs=args.n_jobs)
-    summary = summarize(df.score.values, df.label.values)
+    summary: dict = summarize(df.score.values, df.label.values)
     attacks = per_attack_eer(df.score.values, df.label.values, df.attack.values)
     pred_bona = df.score >= det.threshold
     summary.update(
         {
             "split": args.split,
-            "dev_threshold": det.threshold,
-            "false_accept_rate_at_dev_threshold": float(
+            "threshold": det.threshold,
+            "dev_threshold": dev_threshold,
+            "false_accept_rate_at_threshold": float(
                 (pred_bona & (df.label == 0)).sum() / max((df.label == 0).sum(), 1)
             ),
-            "false_reject_rate_at_dev_threshold": float(
+            "false_reject_rate_at_threshold": float(
                 (~pred_bona & (df.label == 1)).sum() / max((df.label == 1).sum(), 1)
             ),
             "per_attack_eer": attacks,
             "model_meta": det.meta,
         }
     )
+    if args.ci_boot > 0:
+        lo, hi = eer_ci(df.score.values, df.label.values, n_boot=args.ci_boot, seed=args.seed)
+        summary["eer_ci95"] = [lo, hi]
+    if has_band:
+        summary["operating_point"] = _operating_point_report(
+            det, df.score.values, df.label.values
+        )
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

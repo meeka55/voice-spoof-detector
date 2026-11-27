@@ -121,13 +121,49 @@ Dataset setup: [docs/DATASETS.md](docs/DATASETS.md). Settings behind the results
 (the MFCC fit took about 80 minutes on my laptop); `--max-train-utts` and `--n-components` trade accuracy for speed.
 The `Makefile` has equivalent shortcuts for Linux/macOS.
 
+Every evaluation writes `metrics.json`, `scores.csv`, `roc.png` and `per_attack_eer.png`.
+`metrics.json` includes a 95% percentile-bootstrap confidence interval for the EER
+(`eer_ci95`; `--ci-boot`, 200 replicates by default, `0` to skip) so a single point
+estimate is not mistaken for a precise one.
+
+### Pick the operating point you can live with
+
+The EER threshold is a property of the score distribution, not a deployment policy: on this
+model it lets 26% of spoofs through. Choose the errors you can accept and let the tool pick
+the thresholds:
+
+```bash
+python -m vsd.train --data-root data/LA --features lfcc --backend gmm \
+    --target-far 0.05 --target-frr 0.10 --out models/lfcc_gmm_calibrated.joblib
+```
+
+Calibration uses `dev` only (never `eval`) and stores two thresholds inside the model:
+
+* `score >= accept` -> `bonafide` (at most 5% of spoofs accepted on `dev`)
+* `score <= reject` -> `spoof` (at most 10% of real speech rejected on `dev`)
+* in between -> `review`, because a detector forced to answer yes/no answers
+  "bona fide" exactly where it is least sure.
+
+`python -m vsd.evaluate` then reports the realised `false_accept_rate`,
+`false_reject_rate` and `review_rate` of that policy on the split you evaluate, next to the
+EER. Budgets chosen on `dev` only hold for the attacks `dev` contains, so the eval numbers
+are the honest version of the same policy. If the budgets cannot be met with an ordered
+pair of thresholds, the band collapses (`band_empty`), `accept` is raised to `reject`, and
+`train` warns rather than shipping a review band that can never trigger.
+
 ### Call the API
 
 ```bash
 VSD_MODEL_PATH=models/lfcc_gmm.joblib uvicorn vsd.api:app --port 8000
 curl -F "file=@sample.wav" http://localhost:8000/v1/detect
-# {"label":"spoof","score":-3.1,"threshold":0.75,"duration_s":3.2,"model":{...}}
+# {"label":"spoof","score":-3.1,"threshold":0.75,"duration_s":3.2,"model":{...},
+#  "accept_threshold":null,"reject_threshold":null}
 ```
+
+`label` is `bonafide` or `spoof`, and `review` when the model carries a calibrated band
+(see above); `accept_threshold` / `reject_threshold` echo that band and are `null`
+otherwise. `VSD_THRESHOLD` still overrides the threshold at startup, which replaces a
+calibrated band.
 
 ### Docker
 
@@ -149,7 +185,8 @@ docker run -p 8000:8000 -v $(pwd)/models:/models voice-spoof-detector
 src/vsd/features.py   LFCC / MFCC front-ends
 src/vsd/detector.py   GMM, logreg, SVM back-ends behind one interface
 src/vsd/data.py       ASVspoof 2019 LA + generic CSV manifest loaders
-src/vsd/metrics.py    EER, AUC, per-attack EER
+src/vsd/metrics.py    EER, AUC, per-attack EER, bootstrap CI
+src/vsd/calibrate.py  threshold calibration and the review band
 src/vsd/train.py      training CLI          src/vsd/evaluate.py  evaluation CLI
 src/vsd/api.py        FastAPI service       src/vsd/synthetic.py  tiny corpus for tests/CI only
 docs/results/         metrics and plots for the runs above

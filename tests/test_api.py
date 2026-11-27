@@ -48,3 +48,23 @@ def test_detect_rejects_garbage(client):
 def test_detect_rejects_too_short(client):
     r = client.post("/v1/detect", files={"file": ("a.wav", _wav_bytes(0.1), "audio/wav")})
     assert r.status_code == 422
+
+
+def test_detect_reports_the_thresholds_behind_the_label(client):
+    r = client.post("/v1/detect", files={"file": ("a.wav", _wav_bytes(), "audio/wav")})
+    body = r.json()
+    assert body["accept_threshold"] is None and body["reject_threshold"] is None
+    assert isinstance(body["threshold"], float)
+
+
+def test_env_float_names_the_variable(monkeypatch):
+    monkeypatch.setenv("VSD_TEST_NUMBER", "not-a-number")
+    with pytest.raises(ValueError, match="VSD_TEST_NUMBER"):
+        api._env_float("VSD_TEST_NUMBER", 0.0)
+    monkeypatch.setenv("VSD_TEST_NUMBER", "nan")
+    with pytest.raises(ValueError, match="finite"):
+        api._env_float("VSD_TEST_NUMBER", 0.0)
+    monkeypatch.setenv("VSD_TEST_NUMBER", "0.75")
+    assert api._env_float("VSD_TEST_NUMBER", 0.0) == pytest.approx(0.75)
+    monkeypatch.delenv("VSD_TEST_NUMBER")
+    assert api._env_float("VSD_TEST_NUMBER", 0.5) == pytest.approx(0.5)

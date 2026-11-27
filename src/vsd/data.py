@@ -21,7 +21,8 @@ ASVSPOOF_SPLITS = {
     "eval": ("ASVspoof2019_LA_eval", "ASVspoof2019.LA.cm.eval.trl.txt"),
 }
 PROTOCOL_DIR = "ASVspoof2019_LA_cm_protocols"
-BONAFIDE = {"bonafide", "bona-fide", "bona_fide", "real", "genuine", "1"}
+BONAFIDE = {"bonafide", "real", "genuine", "1", "1.0", "true", "yes", "human"}
+SPOOF = {"spoof", "spoofed", "fake", "synthetic", "deepfake", "0", "0.0", "false", "no", "attack"}
 
 
 def parse_asvspoof_protocol(protocol_path: Path, audio_dir: Path, split: str) -> pd.DataFrame:
@@ -62,12 +63,26 @@ def load_asvspoof2019_la(root: str | Path) -> pd.DataFrame:
 
 
 def load_manifest(csv_path: str | Path, base_dir: str | Path | None = None, seed: int = 0) -> pd.DataFrame:
-    """Load a generic manifest. Missing ``split`` is filled with a random 70/15/15 split."""
+    """Load a generic manifest. Missing ``split`` is filled with a random 70/15/15 split.
+
+    Labels are matched after normalising case, surrounding spaces and ``-``/``_``
+    separators, so ``bona fide``, ``Bona-Fide`` and ``bonafide`` all mean the same
+    thing. Anything that matches neither the bona fide nor the spoof vocabulary raises
+    instead of being silently counted as spoof: a typo in one label would otherwise
+    flip a whole class and train a model on the opposite of what the manifest says.
+    """
     df = pd.read_csv(csv_path)
     if not {"path", "label"} <= set(df.columns):
         raise ValueError("manifest needs at least the columns: path,label")
     df = df.copy()
-    df["label"] = df["label"].astype(str).str.lower().map(lambda v: 1 if v in BONAFIDE else 0)
+    raw = df["label"].astype(str).str.strip().str.lower().str.replace(r"[\s\-_]+", "", regex=True)
+    unknown = sorted(set(raw) - BONAFIDE - SPOOF)
+    if unknown:
+        raise ValueError(
+            f"unrecognised label values in {csv_path}: {unknown[:5]}. "
+            f"Known bona fide: {sorted(BONAFIDE)}; known spoof: {sorted(SPOOF)}"
+        )
+    df["label"] = raw.isin(BONAFIDE).astype(int)
     if "attack" not in df.columns:
         df["attack"] = np.where(df["label"] == 1, "-", "spoof")
     if base_dir is not None:
@@ -80,8 +95,19 @@ def load_manifest(csv_path: str | Path, base_dir: str | Path | None = None, seed
 
 
 def subsample(df: pd.DataFrame, max_utts: int | None, seed: int = 0) -> pd.DataFrame:
-    """Stratified (by label) random subsample, used to make quick experiments cheap."""
-    if not max_utts or len(df) <= max_utts:
+    """Stratified (by label) random subsample, used to make quick experiments cheap.
+
+    ``None`` means "keep everything". Zero and negative values are refused: ``0`` used
+    to return the full frame, so a quick run silently trained and evaluated on the whole
+    dataset while reporting the reduced size.
+    """
+    if max_utts is None:
+        return df
+    if isinstance(max_utts, bool) or not isinstance(max_utts, (int, np.integer)):
+        raise TypeError(f"max_utts must be an integer or None, got {max_utts!r}")
+    if max_utts < 1:
+        raise ValueError(f"max_utts must be >= 1 or None, got {max_utts}")
+    if len(df) <= max_utts or len(df) == 0:
         return df
     parts = []
     for _, g in df.groupby("label"):
